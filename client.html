@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Stream</title>
+</head>
+<body>
+    <h1>Stream Audio to Backend</h1>
+    <button onclick="startStreaming()">Start Streaming</button>
+    <button onclick="stopStreaming()">Stop Streaming</button>
+
+    <script>
+        let audioContext;
+        let processor;
+        let input;
+        let globalStream;
+        let socket;
+
+        const SAMPLE_RATE = 16000; // AWS Transcribe sample rate
+        const CHUNK_SIZE = 1024 * 2; // Equivalent to block size in sounddevice
+
+        function startStreaming() {
+            // Request permission and access to the microphone
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    // Initialize the WebSocket connection to the backend
+                    socket = new WebSocket('ws://localhost:8000/stream');
+
+                    socket.onopen = () => {
+                        console.log('WebSocket connection established');
+                    };
+
+                    socket.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                    };
+
+                    // Set up audio context and processor
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: SAMPLE_RATE
+                    });
+
+                    // Create an audio processor node with the chunk size
+                    processor = audioContext.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                    processor.onaudioprocess = processAudio;
+
+                    // Connect the microphone input to the processor
+                    input = audioContext.createMediaStreamSource(stream);
+                    input.connect(processor);
+                    processor.connect(audioContext.destination);
+
+                    globalStream = stream; // Store the stream to stop it later
+                })
+                .catch(err => {
+                    console.error('Error accessing microphone:', err);
+                });
+        }
+
+        function processAudio(event) {
+            const inputData = event.inputBuffer.getChannelData(0);  // Get audio data from channel 0
+            const audioChunk = new Int16Array(inputData.length);
+
+            // Convert float32 audio data to int16 for AWS Transcribe
+            for (let i = 0; i < inputData.length; i++) {
+                audioChunk[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+            }
+
+            // Send the Int16Array chunk over the WebSocket
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(audioChunk.buffer);
+            }
+        }
+
+        function stopStreaming() {
+            if (globalStream) {
+                // Stop the microphone stream
+                globalStream.getTracks().forEach(track => track.stop());
+            }
+
+            if (processor) {
+                // Disconnect the processor
+                processor.disconnect();
+            }
+
+            if (socket) {
+                // Close the WebSocket connection
+                socket.close();
+                console.log('WebSocket connection closed');
+            }
+
+            if (audioContext) {
+                // Close the audio context
+                audioContext.close();
+            }
+        }
+    </script>
+</body>
+</html>
